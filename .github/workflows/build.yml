@@ -1,0 +1,56 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and unit tests
+        shell: cmd
+        run: build.cmd
+      - name: Package
+        shell: pwsh
+        run: |
+          $pkg = New-Item -ItemType Directory -Force out\package
+          Copy-Item out\FirstWord.exe, install.ps1, uninstall.ps1, README.md, LICENSE $pkg
+          $hash = (Get-FileHash out\FirstWord.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash *FirstWord.exe" | Set-Content -Encoding ascii (Join-Path $pkg 'SHA256SUMS.txt')
+          "commit $env:GITHUB_SHA" | Add-Content -Encoding ascii (Join-Path $pkg 'SHA256SUMS.txt')
+          Compress-Archive -Path "$pkg\*" -DestinationPath out\FirstWord-win-x64.zip
+          Get-Content (Join-Path $pkg 'SHA256SUMS.txt')
+          "zip $((Get-FileHash out\FirstWord-win-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant())"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FirstWord-win-x64
+          path: out/FirstWord-win-x64.zip
+          retention-days: 30
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: FirstWord-win-x64
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$(sha256sum FirstWord-win-x64.zip | cut -d' ' -f1)
+          gh release create "$GITHUB_REF_NAME" FirstWord-win-x64.zip \
+            --repo "$GITHUB_REPOSITORY" --title "FirstWord $GITHUB_REF_NAME" \
+            --notes "Download **FirstWord-win-x64.zip**, unzip, run \`install.ps1\` (see README). Built from ${GITHUB_SHA} by GitHub Actions. Zip SHA-256: \`${sha}\`. The EXE is unsigned; its SHA-256 is in SHA256SUMS.txt inside the zip."
